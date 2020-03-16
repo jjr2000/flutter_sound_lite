@@ -90,21 +90,6 @@ FlutterMethodChannel* _channel;
     }
 }
 
-- (void)updateRecorderProgress:(NSTimer*) timer
-{
-  NSNumber *currentTime = [NSNumber numberWithDouble:audioRecorder.currentTime * 1000];
-    [audioRecorder updateMeters];
-
-NSString* status = [NSString stringWithFormat:@"{\"current_position\": \"%@\"}", [currentTime stringValue]];
-  /*
-  NSDictionary *status = @{
-                           @"current_position" : [currentTime stringValue],
-                           };
-  */
-
-  [_channel invokeMethod:@"updateRecorderProgress" arguments:status];
-}
-
 - (void)updateProgress:(NSTimer*) timer
 {
   NSNumber *duration = [NSNumber numberWithDouble:audioPlayer.duration * 1000];
@@ -131,17 +116,6 @@ NSString* status = [NSString stringWithFormat:@"{\"current_position\": \"%@\"}",
 {
       NSNumber *normalizedPeakLevel = [NSNumber numberWithDouble:MIN(pow(10.0, [audioRecorder peakPowerForChannel:0] / 20.0) * 160.0, 160.0)];
       [_channel invokeMethod:@"updateDbPeakProgress" arguments:normalizedPeakLevel];
-}
-
-- (void)startRecorderTimer
-{
-  dispatch_async(dispatch_get_main_queue(), ^{
-      self->timer = [NSTimer scheduledTimerWithTimeInterval: subscriptionDuration
-                                           target:self
-                                           selector:@selector(updateRecorderProgress:)
-                                           userInfo:nil
-                                           repeats:YES];
-  });
 }
 
 - (void)startTimer
@@ -176,46 +150,15 @@ NSString* status = [NSString stringWithFormat:@"{\"current_position\": \"%@\"}",
 }
 
 - (void)handleMethodCall:(FlutterMethodCall*)call result:(FlutterResult)result {
-  if ([@"startRecorder" isEqualToString:call.method]) {
-    NSString* path = (NSString*)call.arguments[@"path"];
-    NSNumber* sampleRateArgs = (NSNumber*)call.arguments[@"sampleRate"];
-    NSNumber* numChannelsArgs = (NSNumber*)call.arguments[@"numChannels"];
-    NSNumber* iosQuality = (NSNumber*)call.arguments[@"iosQuality"];
-    NSNumber* bitRate = (NSNumber*)call.arguments[@"bitRate"];
-    NSNumber* codec = (NSNumber*)call.arguments[@"codec"];
-    
-    t_CODEC coder = CODEC_AAC;
-    if (![codec isKindOfClass:[NSNull class]])
-    {
-            coder = [codec intValue];
-    }
-
-    float sampleRate = 44100;
-    if (![sampleRateArgs isKindOfClass:[NSNull class]]) {
-      sampleRate = [sampleRateArgs integerValue];
-    }
-
-    int numChannels = 2;
-    if (![numChannelsArgs isKindOfClass:[NSNull class]]) {
-      numChannels = [numChannelsArgs integerValue];
-    }
-
-    [self startRecorder:path:[NSNumber numberWithInt:numChannels]:[NSNumber numberWithInt:sampleRate]:coder:iosQuality:bitRate result:result];
-
-  } else if ([@"isEncoderSupported" isEqualToString:call.method]) {
+  if ([@"isEncoderSupported" isEqualToString:call.method]) {
     NSNumber* codec = (NSNumber*)call.arguments[@"codec"];
     [self isEncoderSupported:[codec intValue] result:result];
   } else if ([@"isDecoderSupported" isEqualToString:call.method]) {
      NSNumber* codec = (NSNumber*)call.arguments[@"codec"];
      [self isDecoderSupported:[codec intValue] result:result];
-  } else if ([@"stopRecorder" isEqualToString:call.method]) {
-    [self stopRecorder: result];
   } else if ([@"startPlayer" isEqualToString:call.method]) {
       NSString* path = (NSString*)call.arguments[@"path"];
       [self startPlayer:path result:result];
-  } else if ([@"startPlayerFromBuffer" isEqualToString:call.method]) {
-      FlutterStandardTypedData* dataBuffer = (FlutterStandardTypedData*)call.arguments[@"dataBuffer"];
-      [self startPlayerFromBuffer:dataBuffer result:result];
   } else if ([@"stopPlayer" isEqualToString:call.method]) {
     [self stopPlayer:result];
   } else if ([@"pausePlayer" isEqualToString:call.method]) {
@@ -269,77 +212,6 @@ NSString* status = [NSString stringWithFormat:@"{\"current_position\": \"%@\"}",
 - (void)setDbLevelEnabled:(BOOL)enabled result: (FlutterResult)result {
     shouldProcessDbLevel = enabled == YES;
     result(@"setDbLevelEnabled");
-}
-
-- (void)startRecorder
-        :(NSString*)path
-        :(NSNumber*)numChannels
-        :(NSNumber*)sampleRate
-        :(t_CODEC) codec
-        :(NSNumber*)iosQuality
-        :(NSNumber*)bitRate
-        result: (FlutterResult)result {
-  if ([path class] == [NSNull class]) {
-    audioFileURL = [NSURL fileURLWithPath:[GetDirectoryOfType_FlutterSound(NSCachesDirectory) stringByAppendingString:defaultExtensions[codec] ]];
-  } else {
-    audioFileURL = [NSURL fileURLWithPath: path];
-  }
-  NSMutableDictionary *audioSettings = [NSMutableDictionary dictionaryWithObjectsAndKeys:
-                                 [NSNumber numberWithFloat:[sampleRate doubleValue]],AVSampleRateKey,
-                                 [NSNumber numberWithInt: formats[codec] ],AVFormatIDKey,
-                                 [NSNumber numberWithInt: [numChannels intValue]],AVNumberOfChannelsKey,
-                                 [NSNumber numberWithInt: [iosQuality intValue]],AVEncoderAudioQualityKey,
-                                 nil];
-    
-    // If bitrate is defined, the use it, otherwise use the OS default
-    if(![bitRate isEqual:[NSNull null]]) {
-        [audioSettings setValue:[NSNumber numberWithInt: [bitRate intValue]]
-                    forKey:AVEncoderBitRateKey];
-    }
-
-  // Setup audio session
-  AVAudioSession *session = [AVAudioSession sharedInstance];
-  [session setCategory:AVAudioSessionCategoryPlayAndRecord error:nil];
-
-  // set volume default to speaker
-  UInt32 doChangeDefaultRoute = 1;
-  AudioSessionSetProperty(kAudioSessionProperty_OverrideCategoryDefaultToSpeaker, sizeof(doChangeDefaultRoute), &doChangeDefaultRoute);
-  
-  // set up for bluetooth microphone input
-  UInt32 allowBluetoothInput = 1;
-  AudioSessionSetProperty (kAudioSessionProperty_OverrideCategoryEnableBluetoothInput,sizeof (allowBluetoothInput),&allowBluetoothInput);
- 
-  audioRecorder = [[AVAudioRecorder alloc]
-                        initWithURL:audioFileURL
-                        settings:audioSettings
-                        error:nil];
-
-  [audioRecorder setDelegate:self];
-  [audioRecorder record];
-  [self startRecorderTimer];
-
-  [audioRecorder setMeteringEnabled:shouldProcessDbLevel];
-  if(shouldProcessDbLevel == true) {
-        [self startDbTimer];
-  }
-
-  NSString *filePath = self->audioFileURL.path;
-  result(filePath);
-}
-
-- (void)stopRecorder:(FlutterResult)result {
-  [audioRecorder stop];
-
-  // Stop Db Timer
-  [dbPeakTimer invalidate];
-  dbPeakTimer = nil;
-  [self stopTimer];
-    
-  AVAudioSession *audioSession = [AVAudioSession sharedInstance];
-  [audioSession setActive:NO error:nil];
-
-  NSString *filePath = audioFileURL.absoluteString;
-  result(filePath);
 }
 
 - (void)startPlayer:(NSString*)path result: (FlutterResult)result {
@@ -398,20 +270,6 @@ NSString* status = [NSString stringWithFormat:@"{\"current_position\": \"%@\"}",
     result(filePath);
   }
 }
-
-
-- (void)startPlayerFromBuffer:(FlutterStandardTypedData*)dataBuffer result: (FlutterResult)result {
-  audioPlayer = [[AVAudioPlayer alloc] initWithData: [dataBuffer data] error: nil];
-  audioPlayer.delegate = self;
-  [[AVAudioSession sharedInstance] setCategory: AVAudioSessionCategoryPlayback error: nil];
-  [audioPlayer play];
-  [self startTimer];
-  result(@"Playing from buffer");
-}
-
-
-
-
 
 - (void)stopPlayer:(FlutterResult)result {
   if (audioPlayer) {

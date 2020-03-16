@@ -17,10 +17,6 @@ void main() {
     log.add(methodCall);
   });
 
-  test('Audio Recorder', () async {
-    expect(log, equals(<MethodCall>[new MethodCall('startRecorder', "")]));
-  });
-
   // Unregister the mock handler.
   channel.setMockMethodCallHandler(null);
 

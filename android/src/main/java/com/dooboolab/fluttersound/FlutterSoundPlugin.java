@@ -36,42 +36,23 @@ class sdkCompat {
   static final int AUDIO_ENCODER_OPUS   = 7;  // MediaRecorder.AudioEncoder.OPUS   added in API level 29
   static final int OUTPUT_FORMAT_OGG    = 11; // MediaRecorder.OutputFormat.OGG    added in API level 29
   static final int VERSION_CODES_M      = 23; // added in API level 23
-
-  static int checkRecordPermission(Registrar reg) {
-    if (Build.VERSION.SDK_INT >= sdkCompat.VERSION_CODES_M) {// Before Marshmallow, record permission was always granted.
-      if (reg.activity() == null) {
-        throw new IllegalStateException("Requesting permission needs a foreground activity");
-      }
-      Activity activity = reg.activity();
-      if (reg.context().checkCallingOrSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-        ActivityCompat.requestPermissions(activity, new String[]{Manifest.permission.RECORD_AUDIO,}, 0);
-        if (reg.context().checkCallingOrSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
-          return PackageManager.PERMISSION_DENIED;
-      }
-    }
-    return PackageManager.PERMISSION_GRANTED;
-  }
 }
 // *****************
 
 /** FlutterSoundPlugin */
 public class FlutterSoundPlugin implements MethodCallHandler, PluginRegistry.RequestPermissionsResultListener, AudioInterface{
   final static String TAG = "FlutterSoundPlugin";
-  final static String RECORD_STREAM = "com.dooboolab.fluttersound/record";
   final static String PLAY_STREAM= "com.dooboolab.fluttersound/play";
 
   private static final String ERR_UNKNOWN = "ERR_UNKNOWN";
   private static final String ERR_PLAYER_IS_NULL = "ERR_PLAYER_IS_NULL";
   private static final String ERR_PLAYER_IS_PLAYING = "ERR_PLAYER_IS_PLAYING";
-  private static final String ERR_RECORDER_IS_NULL = "ERR_RECORDER_IS_NULL";
-  private static final String ERR_RECORDER_IS_RECORDING = "ERR_RECORDER_IS_RECORDING";
 
   private final ExecutorService taskScheduler = Executors.newSingleThreadExecutor();
 
   private static Registrar reg;
   final private AudioModel model = new AudioModel();
   private Timer mTimer = new Timer();
-  final private Handler recordHandler = new Handler();
   //mainThread handler
   final private Handler mainHandler = new Handler();
   final private Handler dbPeakLevelHandler = new Handler();
@@ -177,33 +158,9 @@ public class FlutterSoundPlugin implements MethodCallHandler, PluginRegistry.Req
         }
           result.success(b);
       } break;
-      case "startRecorder":
-        taskScheduler.submit(() -> {
-          Integer sampleRate = call.argument("sampleRate");
-          Integer numChannels = call.argument("numChannels");
-          Integer bitRate = call.argument("bitRate");
-          int androidEncoder = call.argument("androidEncoder");
-          int _codec = call.argument("codec");
-          t_CODEC codec = t_CODEC.values()[_codec];
-          int androidAudioSource = call.argument("androidAudioSource");
-          int androidOutputFormat = call.argument("androidOutputFormat");
-          startRecorder(numChannels, sampleRate, bitRate, codec,  androidEncoder, androidAudioSource, androidOutputFormat, path, result);
-        });
-        break;
-      case "stopRecorder":
-        taskScheduler.submit(() -> stopRecorder(result));
-        break;
       case "startPlayer":
         this.startPlayer(path, result);
         break;
-
-      case "startPlayerFromBuffer":
-        Integer _codec = call.argument("codec");
-        t_CODEC codec = t_CODEC.values()[(_codec != null) ? _codec : 0 ];
-        byte[] dataBuffer = call.argument("dataBuffer");
-        this.startPlayerFromBuffer(dataBuffer, codec, result);
-        break;
-
       case "stopPlayer":
         this.stopPlayer(result);
         break;
@@ -250,151 +207,6 @@ public class FlutterSoundPlugin implements MethodCallHandler, PluginRegistry.Req
         break;
     }
     return false;
-  }
-
-  @Override
-  public void startRecorder(Integer numChannels, Integer sampleRate, Integer bitRate, t_CODEC codec, int androidEncoder, int androidAudioSource, int androidOutputFormat, String path, final Result result) {
-    final int v = Build.VERSION.SDK_INT;
-
-      if ( sdkCompat.checkRecordPermission(reg) != PackageManager.PERMISSION_GRANTED) {
-          result.error(TAG, "NO PERMISSION GRANTED", Manifest.permission.RECORD_AUDIO + " or " + Manifest.permission.WRITE_EXTERNAL_STORAGE);
-          return;
-      }
-
-    // The caller must be allowed to specify its path. We must not change it here
-    // path = PathUtils.getDataDirectory(reg.context()) + "/" + path; // SDK 29 : you may not write in getExternalStorageDirectory() [LARPOUX]
-    MediaRecorder mediaRecorder = model.getMediaRecorder();
-
-    if (mediaRecorder == null) {
-      model.setMediaRecorder(new MediaRecorder());
-      mediaRecorder = model.getMediaRecorder();
-    } else {
-      mediaRecorder.reset();
-    }
-    mediaRecorder.setAudioSource(androidAudioSource);
-    if (codecArray[codec.ordinal()] == 0) {
-      result.error(TAG, "UNSUPPORTED", "Unsupported encoder");
-      return;
-    }
-    androidEncoder = codecArray[codec.ordinal()];
-    androidOutputFormat = formatsArray[codec.ordinal()];
-    mediaRecorder.setOutputFormat (androidOutputFormat);
-
-    if (path == null) path = pathArray[codec.ordinal()];
-    // else // // This will be handled by the path_provider
-    //   path = reg.activity().getExternalFilesDirs("external")[0] + path;
-
-    mediaRecorder.setOutputFile(path);
-    mediaRecorder.setAudioEncoder(androidEncoder);
-
-    if (numChannels != null) {
-        mediaRecorder.setAudioChannels(numChannels);
-      }
-
-      if (sampleRate != null) {
-        mediaRecorder.setAudioSamplingRate(sampleRate);
-      }
-
-      // If bitrate is defined, then use it, otherwise use the OS default
-      if (bitRate != null) {
-        mediaRecorder.setAudioEncodingBitRate(bitRate);
-      }
-
-
-    try {
-      mediaRecorder.prepare();
-      mediaRecorder.start();
-
-      // Remove all pending runnables, this is just for safety (should never happen)
-      recordHandler.removeCallbacksAndMessages(null);
-      final long systemTime = SystemClock.elapsedRealtime();
-      this.model.setRecorderTicker(() -> {
-
-        long time = SystemClock.elapsedRealtime() - systemTime;
-//          Log.d(TAG, "elapsedTime: " + SystemClock.elapsedRealtime());
-//          Log.d(TAG, "time: " + time);
-
-//          DateFormat format = new SimpleDateFormat("mm:ss:SS", Locale.US);
-//          String displayTime = format.format(time);
-//          model.setRecordTime(time);
-        try {
-          JSONObject json = new JSONObject();
-          json.put("current_position", String.valueOf(time));
-          channel.invokeMethod("updateRecorderProgress", json.toString());
-          recordHandler.postDelayed(model.getRecorderTicker(), model.subsDurationMillis);
-        } catch (JSONException je) {
-          Log.d(TAG, "Json Exception: " + je.toString());
-        }
-      });
-      recordHandler.post(this.model.getRecorderTicker());
-
-      if(this.model.shouldProcessDbLevel) {
-        dbPeakLevelHandler.removeCallbacksAndMessages(null);
-        this.model.setDbLevelTicker(() -> {
-
-          MediaRecorder recorder = model.getMediaRecorder();
-          if (recorder != null) {
-            double maxAmplitude = recorder.getMaxAmplitude();
-
-            // Calculate db based on the following article.
-            // https://stackoverflow.com/questions/10655703/what-does-androids-getmaxamplitude-function-for-the-mediarecorder-actually-gi
-            //
-            double ref_pressure = 51805.5336;
-            double p = maxAmplitude  / ref_pressure;
-            double p0 = 0.0002;
-
-            double db = 20.0 * Math.log10(p / p0);
-
-            // if the microphone is off we get 0 for the amplitude which causes
-            // db to be infinite.
-            if (Double.isInfinite(db))
-              db = 0.0;
-
-            Log.d(TAG, "rawAmplitude: " + maxAmplitude + " Base DB: " + db);
-
-            channel.invokeMethod("updateDbPeakProgress", db);
-            dbPeakLevelHandler.postDelayed(model.getDbLevelTicker(),
-            (FlutterSoundPlugin.this.model.peakLevelUpdateMillis));
-          }
-        });
-        dbPeakLevelHandler.post(this.model.getDbLevelTicker());
-      }
-
-
-      finalPath = path;
-      mainHandler.post(new Runnable() {
-        @Override
-        public void run() {
-          result.success(finalPath);
-        }
-      });
-    } catch (Exception e) {
-      Log.e(TAG, "Exception: ", e);
-    }
-  }
-
-  @Override
-  public void stopRecorder(final Result result) {
-    // This remove all pending runnables
-    recordHandler.removeCallbacksAndMessages(null);
-    dbPeakLevelHandler.removeCallbacksAndMessages(null);
-
-    if (this.model.getMediaRecorder() == null) {
-      Log.d(TAG, "mediaRecorder is null");
-      result.error(ERR_RECORDER_IS_NULL, ERR_RECORDER_IS_NULL, ERR_RECORDER_IS_NULL);
-      return;
-    }
-    this.model.getMediaRecorder().stop();
-    this.model.getMediaRecorder().reset();
-    this.model.getMediaRecorder().release();
-    this.model.setMediaRecorder(null);
-    mainHandler.post(new Runnable(){
-      @Override
-      public void run() {
-        result.success(finalPath);
-      }
-    });
-
   }
 
   public void startPlayer(final String path, final Result result) {
@@ -488,19 +300,6 @@ public class FlutterSoundPlugin implements MethodCallHandler, PluginRegistry.Req
       result.error(ERR_UNKNOWN, ERR_UNKNOWN, e.getMessage());
     }
   }
-
-  public void startPlayerFromBuffer(final byte[] dataBuffer, t_CODEC codec, final Result result)
-  {
-    try {
-      File f = File.createTempFile("flutter_sound", extentionArray[codec.ordinal()]);
-      FileOutputStream fos = new FileOutputStream(f);
-      fos.write(dataBuffer);
-      startPlayer(f.getAbsolutePath(), result);
-    } catch(Exception e) {
-      result.error(ERR_UNKNOWN, ERR_UNKNOWN, e.getMessage());
-    }
-  }
-
 
   @Override
   public void stopPlayer(final Result result) {

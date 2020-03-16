@@ -15,8 +15,6 @@ enum t_CODEC
 }
 
 interface AudioInterface {
-  void startRecorder(Integer numChannels, Integer sampleRate, Integer bitRate, t_CODEC codec, int androidEncoder, int androidAudioSource, int androidOutputFormat, String path, MethodChannel.Result result);
-  void stopRecorder(MethodChannel.Result result);
   void startPlayer(String path, MethodChannel.Result result);
   void stopPlayer(MethodChannel.Result result);
   void pausePlayer(MethodChannel.Result result);
